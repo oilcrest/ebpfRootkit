@@ -24,7 +24,10 @@ const char argp_program_doc[] =
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
     const struct event *e = data;
-    printf("PID: %u, UID: %u, COMM: %s\n", e->pid, e->uid, e->comm);
+    if (e->success)
+        printf("Hid PID from program %d (%s)\n", e->pid, e->comm);
+    else
+        printf("Failed to hide PID from program %d (%s)\n", e->pid, e->comm);
     return 0;
 }
 

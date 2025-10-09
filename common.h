@@ -5,7 +5,6 @@
 // 定义事件结构体
 struct event {
     int pid;
-    int uid;
     char comm[16];
     bool success;
 };
