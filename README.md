@@ -1,30 +1,285 @@
-# ebpfRootkit
-Project Name: eBPFRootkit
+# eBPFRootkit
 
-Description:
+<p align="center">
+  <strong>基于 eBPF 技术的内核级 Rootkit 研究项目</strong>
+</p>
 
-eBPFRootkit is an experimental open-source project that explores the dual-edged nature of extended Berkeley Packet Filter (eBPF) technology by demonstrating how it can be leveraged to build stealthy, kernel-level rootkits. Designed for security research and defensive analysis, this project aims to shed light on modern Linux kernel vulnerabilities and the potential misuse of eBPF for advanced persistence, privilege escalation, and covert operations.
+<p align="center">
+  <img src="https://img.shields.io/badge/Linux-Kernel-blue" alt="Linux Kernel">
+  <img src="https://img.shields.io/badge/eBPF-CO--RE-green" alt="eBPF CO-RE">
+  <img src="https://img.shields.io/badge/License-GPL%20v2-orange" alt="License">
+  <img src="https://img.shields.io/badge/Purpose-Research%20Only-red" alt="Research Only">
+</p>
 
-Key Features:
+---
 
-Process & File Hiding: Conceal specific processes or files from user-space tools.
-Network Traffic Redirection: Manipulate packet flows transparently at the kernel level.
-System Call Hooking: Intercept and modify kernel syscalls for behavioral manipulation.
-Anti-Forensics: Evade common detection mechanisms (e.g., bypass eBPF verifier checks).
-CO-RE (Compile Once, Run Everywhere): Compatible with multiple kernel versions via eBPF portability.
-Use Cases:
+## 📖 项目简介
 
-🔍 Security Research: Study eBPF-based attack vectors and kernel exploits.
-🛡️ Defensive Tooling: Develop detection rules for eBPF-powered threats.
-🎯 Red Team/CTF Challenges: Simulate advanced adversarial techniques in controlled environments.
-Warning:
-⚠️ This project is strictly for legal, authorized security research and educational purposes.
-⚠️ Any malicious use is explicitly prohibited. Contributors assume no liability for misuse.
+**eBPFRootkit** 是一个实验性的安全研究项目，探索 eBPF（extended Berkeley Packet Filter）技术在 Linux 内核层面的高级应用。本项目深受以下优秀开源项目的启发：
 
-Technology Stack:
+- **[ebpfkit](https://github.com/Gui774ume/ebpfkit)** - 功能完整的 eBPF rootkit，展示了网络监控、容器逃逸和持久化技术
+- **[TripleCross](https://github.com/h3xduck/TripleCross)** - 强大的 Linux eBPF rootkit，实现了后门、C2、库注入和执行劫持
+- **[bad-bpf](https://github.com/pathtofile/bad-bpf)** - eBPF 恶意行为示例集合，演示内核与用户态交互
 
-eBPF + CO-RE for kernel-space operations.
-Libbpf for eBPF program loading and interaction.
-LLVM/Clang for eBPF bytecode compilation.
-Disclaimer:
-eBPFRootkit is a proof-of-concept tool intended to advance defensive security practices. Always obtain proper authorization before use in any environment.
+本项目旨在通过实践这些技术，帮助安全研究人员和防御工程师更好地理解 eBPF 技术的双刃剑特性，并为构建针对性的检测和防御机制提供参考。
+
+---
+
+## 🎯 核心特性
+
+### 已实现功能
+
+- **✅ 进程隐藏** - 通过 Hook `getdents64` 系统调用隐藏指定进程
+- **✅ 文件隐藏** - 从目录列表中隐藏特定文件
+- **✅ eBPF 尾调用** - 突破 eBPF 循环限制，处理大型目录
+- **✅ 内核级别操作** - 无需修改文件系统，直接在内核层面实施隐藏
+- **✅ CO-RE 支持** - 一次编译，跨内核版本运行
+
+### 规划中功能
+
+- **🔄 网络流量操控** - 透明代理和流量重定向
+- **🔄 系统调用拦截** - 动态修改关键系统调用行为
+- **🔄 命令与控制（C2）** - 实现隐蔽的远程控制通道
+- **🔄 内存注入** - 向目标进程注入代码
+- **🔄 持久化机制** - 系统重启后自动加载
+- **🔄 反取证技术** - 逃避常见的安全检测工具
+
+---
+
+## 🏗️ 技术架构
+
+```
+┌─────────────────────────────────────┐
+│     用户态 (User Space)             │
+├─────────────────────────────────────┤
+│  rootkit.c (控制程序)               │
+│  - 加载 eBPF 程序                   │
+│  - 设置过滤规则                     │
+│  - 读取内核数据                     │
+└──────────────┬──────────────────────┘
+               │ libbpf
+┌──────────────▼──────────────────────┐
+│     内核态 (Kernel Space)           │
+├─────────────────────────────────────┤
+│  rootkit.bpf.c (eBPF 程序)          │
+│  - Tracepoint Hooks                 │
+│  - Kprobe/Kretprobe Hooks           │
+│  - eBPF Maps (数据存储)             │
+│  - 尾调用 (Tail Calls)              │
+└─────────────────────────────────────┘
+```
+
+### 关键技术组件
+
+- **eBPF 程序** (`rootkit.bpf.c`) - 运行在内核态的核心逻辑
+- **用户态控制程序** (`rootkit.c`) - 管理和配置 eBPF 程序
+- **eBPF Maps** - 内核与用户态的数据交换通道
+- **vmlinux.h** - BTF 类型信息，实现 CO-RE
+- **libbpf** - eBPF 程序加载和管理库
+
+---
+
+## 🛠️ 技术栈
+
+| 组件 | 技术 | 说明 |
+|------|------|------|
+| 内核程序 | C + eBPF | 使用 eBPF 字节码在内核态运行 |
+| 编译工具链 | LLVM/Clang | 生成 eBPF 字节码 |
+| 类型信息 | BTF (BPF Type Format) | 实现 CO-RE 跨内核兼容 |
+| 用户态库 | libbpf | eBPF 程序的加载和管理 |
+| 构建工具 | Makefile | 自动化编译流程 |
+
+---
+
+## 📦 编译与安装
+
+### 系统要求
+
+- Linux 内核版本 >= 5.8（支持 BTF 和 CO-RE）
+- LLVM/Clang >= 10
+- libbpf 开发库
+- bpftool
+
+### Ubuntu/Debian 安装依赖
+
+```bash
+sudo apt update
+sudo apt install -y clang llvm libelf-dev linux-headers-$(uname -r) \
+                     build-essential libbpf-dev linux-tools-generic
+```
+
+### Fedora/RHEL 安装依赖
+
+```bash
+sudo dnf install -y clang llvm elfutils-libelf-devel kernel-devel \
+                     libbpf-devel bpftool
+```
+
+### 编译项目
+
+```bash
+# 克隆项目
+git clone https://github.com/your-username/ebpfRootkit.git
+git submodule update --init --recursive
+
+cd ebpfRootkit
+
+# 编译
+make
+
+# 生成的可执行文件
+./rootkit
+```
+
+---
+
+## 🚀 使用说明
+
+### 基本用法
+
+```bash
+# 以 root 权限运行（eBPF 需要 CAP_BPF 或 root 权限）
+sudo ./rootkit
+```
+
+### 进程隐藏示例
+
+```c
+// 在 rootkit.bpf.c 中配置要隐藏的进程 ID
+const volatile char pid_to_hide[MAX_PID_LEN] = "1234";
+```
+
+### 查看 eBPF 程序状态
+
+```bash
+# 列出已加载的 eBPF 程序
+sudo bpftool prog list
+
+# 查看 eBPF Map 内容
+sudo bpftool map dump name map_buffs
+```
+
+### 卸载 eBPF 程序
+
+```bash
+# eBPF 程序在用户态程序退出后自动卸载
+# 或手动通过 PID 卸载
+sudo bpftool prog detach id <prog_id>
+```
+
+---
+
+## 🔬 功能演示
+
+### 1. 进程隐藏
+
+**目标**：隐藏指定 PID 的进程，使其在 `ps`、`top` 等工具中不可见。
+
+**实现原理**：
+- Hook `sys_getdents64` 系统调用
+- 过滤掉目标 PID 对应的目录项
+- 调整返回的目录条目大小
+
+**测试步骤**：
+
+```bash
+# 1. 启动一个测试进程
+sleep 3600 &
+echo $!  # 记录 PID，假设为 12345
+
+# 2. 配置并运行 rootkit（修改代码中的 pid_to_hide）
+sudo ./rootkit
+
+# 3. 验证隐藏效果
+ps aux | grep 12345  # 不会显示该进程
+ls -la /proc/ | grep 12345  # /proc 目录中不可见
+```
+
+### 2. 文件隐藏
+
+**原理**：与进程隐藏类似，通过过滤 `getdents64` 返回结果实现。
+
+---
+
+## 🎓 学习资源
+
+### eBPF 基础
+
+- [eBPF 官方文档](https://ebpf.io/)
+- [libbpf](https://github.com/libbpf/) - eBPF libbpf 入门
+- [BPF CO-RE 参考指南](https://nakryiko.com/posts/bpf-portability-and-co-re/)
+
+### 内核安全
+
+- [Linux Kernel Module Programming Guide](https://sysprog21.github.io/lkmpg/)
+
+---
+
+## ⚠️ 安全警告与免责声明
+
+### 🔴 重要声明
+
+1. **本项目仅用于合法的安全研究和教育目的**
+2. **未经授权在生产环境或他人系统上使用本工具是违法行为**
+3. **作者不对任何滥用行为承担责任**
+4. **使用者需自行承担所有法律风险**
+
+### 合法使用场景
+
+- ✅ 在自己的系统上进行安全研究
+- ✅ 获得明确授权的渗透测试
+- ✅ 学术研究和教学
+- ✅ 安全产品的检测能力测试
+
+### 禁止使用场景
+
+- ❌ 未经授权访问他人系统
+- ❌ 窃取机密信息
+- ❌ 破坏系统功能
+- ❌ 任何形式的非法活动
+
+---
+
+## 🤝 贡献指南
+
+欢迎提交 Issue 和 Pull Request！贡献前请阅读以下规范：
+
+1. 代码风格遵循 Linux 内核编码规范
+2. 提交前请确保代码可以编译通过
+3. 添加必要的注释和文档
+4. 新功能需要包含使用说明
+
+---
+
+## 📚 参考项目
+
+本项目的实现参考和学习了以下优秀开源项目：
+
+| 项目 | 作者 | 特点 | 链接 |
+|------|------|------|------|
+| **ebpfkit** | Gui774ume | 完整的 eBPF rootkit 框架，C2 功能 | [GitHub](https://github.com/Gui774ume/ebpfkit) |
+| **TripleCross** | h3xduck | 后门、库注入、执行劫持 | [GitHub](https://github.com/h3xduck/TripleCross) |
+| **bad-bpf** | pathtofile | eBPF 恶意行为示例集合 | [GitHub](https://github.com/pathtofile/bad-bpf) |
+
+---
+
+## 📄 许可证
+
+- **eBPF 内核程序** (`rootkit.bpf.c`) 采用 **GPL v2** 许可证
+- **用户态代码** (`rootkit.c`) 采用 **GPL v2** 许可证
+
+eBPF 程序必须使用 GPL 兼容许可证才能加载到 Linux 内核。
+
+---
+
+## 📮 联系方式
+
+- **Issues**: 通过 GitHub Issues 报告问题
+- **讨论**: 通过 GitHub Discussions 参与讨论
+
+---
+
+<p align="center">
+  <strong>⚡ 仅供安全研究和教育使用 ⚡</strong><br>
+  <em>请负责任地使用技术，共同维护网络安全</em>
+</p>
