@@ -5,7 +5,8 @@
         "rootkit.skel.h": "c",
         "bpf.h": "c",
         "types.h": "c",
-        "bpf_core_read.h": "c"
+        "bpf_core_read.h": "c",
+        "common.h": "c"
     },
     "makefile.configurations": [
         {
